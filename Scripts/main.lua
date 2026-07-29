@@ -1,29 +1,34 @@
 -- ============================================================================
---  Punishing Death  v1.0.0  --  Palworld UE4SS Lua mod  (single-player / client)
+--  Punishing Death  v2.0.0  --  Palworld UE4SS Lua mod  (single-player / client)
 --
---  On death you lose part of your progress toward the next level. Your LEVEL
---  NUMBER never changes -- only the EXP within the current level is drained,
---  down to (at most) the start of your current level.
+--  On death you lose a flat fraction of your TOTAL earned EXP (default 10%).
+--  In mid/late game that is roughly one level, so you naturally DE-LEVEL -- and
+--  when you do, that level's rewards are stripped too:
+--    * techs whose LevelCap is now above your level are re-locked
+--    * that level's tech points are removed (with the stripped techs' cost refunded,
+--      so re-buying them nets to zero -- no farm)
+--    * one status point per level lost is removed (unused first, else a random
+--      allocated stat is docked)
+--  A natural re-level re-grants everything, so death -> recover nets to zero.
+--  At low levels (10% < one level) it's just an EXP scratch, no de-level.
 --
---  Exploit-free by design: no level change means the game never re-grants
---  status/technology points, so death can never be farmed for gain.
---  See DESIGN_NOTES.md for the de-leveling approach we tried and rejected.
+--  Exploit-free: the strip exactly offsets the re-level grant.
 -- ============================================================================
 
 local CONFIG = {
-    -- Fraction of your CURRENT-LEVEL progress lost per death.
-    --   0.25 = lose a quarter of your progress toward the next level
-    --   0.50 = lose half (default)
-    --   1.00 = every death throws you back to the START of your current level
-    progress_loss_fraction = 0.50,
+    -- Fraction of your TOTAL earned EXP lost per death (0.10 = 10%).
+    total_loss_fraction = 0.10,
 
-    poll_ms = 2000,           -- death-check interval (death lingers seconds, so 2s is plenty)
-    enable_test_keys = false, -- set true to re-enable F9 (apply) / F7 (restore) / F10 (report)
-    verbose = false,          -- set true for chatty logs while debugging
+    -- Broadcast "<name> died and lost N EXP" as a [SYSTEM] line.
+    --   NOTE: on a dedicated server this system-announce is visible to ALL players.
+    show_message = true,
+
+    poll_ms = 2000,           -- death-check interval
+    enable_test_keys = true,  -- F9 = run penalty now, F1 = force -1 level, F3 = dry-run. OFF for release.
+    verbose = false,
 }
 
 local function log(m) print("[PD] " .. m .. "\n") end
-local function vlog(m) if CONFIG.verbose then log(m) end end
 local function isValid(o) return o ~= nil and type(o) == "userdata" and o.IsValid and o:IsValid() end
 local function num(x) return tonumber(tostring(x)) end
 
@@ -50,7 +55,7 @@ local function loadCurve()
     if THRESH ~= nil then return true end
     local dt = StaticFindObject("/Game/Pal/DataTable/Exp/DT_PalExpTable.DT_PalExpTable")
     if not isValid(dt) then return false end
-    local t, maxl = {}, 1
+    local t = {}
     local ok = pcall(function()
         dt:ForEachRow(function(rowName, rowData)
             local lvl = num(rowName); local total; pcall(function() total = rowData.TotalEXP end); total = num(total)
@@ -62,20 +67,153 @@ local function loadCurve()
     return true
 end
 
--- Penalty: drain current-level progress; never touch the level number.
-local function applyPenalty(reason)
+-- highest level whose cumulative-EXP threshold <= exp
+local function levelForExp(exp)
+    local best = 1
+    for L, thr in pairs(THRESH or {}) do
+        if thr <= exp and L > best then best = L end
+    end
+    return best
+end
+
+-- thousands separator ("12345" -> "12,345")
+local function commas(n)
+    local s = tostring(math.floor(n)); local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    return (out:gsub("^,", ""))
+end
+
+-- Show a blue "[SYSTEM]" line. Confirmed: PalUtility:SendSystemAnnounce(worldContext, msg).
+local PALUTIL = nil
+local function announce(msg)
+    if not CONFIG.show_message then return end
+    pcall(function()
+        if not isValid(PALUTIL) then PALUTIL = StaticFindObject("/Script/Pal.Default__PalUtility") end
+        local p = getPlayer()
+        if not (isValid(PALUTIL) and isValid(p)) then return end
+        PALUTIL:SendSystemAnnounce(p:GetWorld(), msg)
+    end)
+end
+
+-- player's display name. Confirmed: PalPlayerState:GetPlayerName() -> FString, :ToString().
+local function playerName()
+    local p = getPlayer()
+    local nm
+    if isValid(p) then
+        local ps
+        pcall(function() ps = p.PlayerState end)
+        if not isValid(ps) then pcall(function() ps = p.Controller.PlayerState end) end
+        if isValid(ps) then
+            pcall(function()
+                local v = ps:GetPlayerName()
+                if type(v) == "userdata" and v.ToString then nm = v:ToString() end
+            end)
+        end
+    end
+    if not nm or nm == "" then nm = "Someone" end
+    return nm
+end
+
+-- player's technology data (holds UnlockedTechnologyNameArray + tech points)
+local function getTechData()
+    local p = getPlayer(); if not isValid(p) then return nil end
+    local ps
+    if not (pcall(function() ps = p.PlayerState end) and isValid(ps)) then
+        pcall(function() ps = p.Controller.PlayerState end)
+    end
+    if not isValid(ps) then return nil end
+    local td; pcall(function() td = ps.TechnologyData end)
+    if isValid(td) then return td end
+    return nil
+end
+
+-- Rebuild UnlockedTechnologyNameArray keeping only techs with LevelCap <= keepFloor.
+-- Returns before-count, after-count, stripped-name-list, total refundable point cost.
+local function stripTechsAboveLevel(td, keepFloor)
+    local arr = td.UnlockedTechnologyNameArray
+    local n = arr:GetArrayNum()
+    local keepers, stripped, stripCost = {}, {}, 0
+    for i = 1, n do
+        local nm = arr[i]:ToString()
+        local bd; pcall(function() bd = td:GetTechlonogyBaseData(FName(nm)) end)
+        local cap = bd and num(bd.LevelCap)
+        if cap and cap > keepFloor then
+            stripped[#stripped + 1] = nm
+            stripCost = stripCost + (bd and num(bd.Cost) or 0)
+        else keepers[#keepers + 1] = nm end
+    end
+    if #stripped == 0 then return n, n, stripped, 0 end
+    arr:Empty()
+    for i, nm in ipairs(keepers) do arr[i] = FName(nm) end
+    return n, arr:GetArrayNum(), stripped, stripCost
+end
+
+-- Remove one unit of status-point capacity: unused first, else dock a random
+-- allocated stat. Status points are keyed by (Japanese) FName StatusName, read
+-- dynamically from GetStatusPointList so we never hardcode the names.
+local function removeOneStatPoint(ip)
+    local unused = num(ip:GetUnusedStatusPoint()) or 0
+    if unused > 0 then
+        return pcall(function() ip:DecrementUnusedStatusPoint() end) and "unused-1" or "unused-FAIL"
+    end
+    local out = {}
+    pcall(function() ip:GetStatusPointList(out) end)
+    local spent = {}
+    for i = 1, 8 do
+        local e = out[i]
+        if e ~= nil then
+            local g; pcall(function() g = e:get() end)
+            local sn; if g ~= nil then pcall(function() sn = g.StatusName end) end
+            local pt; if sn ~= nil then pcall(function() pt = num(ip:GetStatusPoint(sn)) end) end
+            if sn ~= nil and pt and pt > 0 then spent[#spent + 1] = { sn = sn, pt = pt } end
+        end
+    end
+    if #spent == 0 then return "none-to-dock" end
+    local pick = spent[math.random(#spent)]
+    return pcall(function() ip:SetStatusPoint(pick.sn, pick.pt - 1) end) and "spent-dock" or "spent-FAIL"
+end
+
+-- The de-level penalty. newExp = target TOTAL exp after the loss.
+local function applyDeLevel(newExp, reason)
     if not loadCurve() then log("penalty aborted: no curve"); return end
     local _, ip, sp = getAll()
     if not (isValid(ip) and sp ~= nil) then return end
-    local L   = num(ip:GetLevel()) or 1
-    local exp = num(ip:GetExp())   or 0
-    local floorExp = THRESH[L] or 0
-    local progress = exp - floorExp
-    if progress <= 0 then return end
-    local newExp = floorExp + math.floor(progress * (1.0 - CONFIG.progress_loss_fraction))
-    sp.Exp = newExp
-    log(string.format("death penalty (%s): L%d kept, Exp %d->%d (lost %d of %d in-level progress)",
-        reason or "death", L, exp, newExp, exp - newExp, progress))
+    local oldLevel = num(ip:GetLevel()) or 1
+    local oldExp   = num(ip:GetExp())   or 0
+    newExp = math.max(0, math.min(newExp, oldExp))          -- never increase exp
+    local newLevel   = levelForExp(newExp)
+    local levelsLost = oldLevel - newLevel
+    log(string.format("=== DE-LEVEL (%s): L%d->L%d  exp %d->%d  (levelsLost=%d) ===",
+        reason or "death", oldLevel, newLevel, oldExp, newExp, levelsLost))
+    if levelsLost > 0 then
+        local td = getTechData()
+        if isValid(td) then
+            local b, a, stripped, stripCost = stripTechsAboveLevel(td, newLevel)
+            pcall(function() td:OnRep_UnlockedTechnologyNameArray() end)   -- re-apply (re-locks recipes)
+            log(string.format("   techs %d->%d (%d stripped, cost %d)", b, a, #stripped, stripCost))
+            local tp = num(td.TechnologyPoint) or 0
+            local newTp = math.max(0, tp + stripCost - 6 * levelsLost)     -- refund cost, remove grant
+            pcall(function() td.TechnologyPoint = newTp end)
+            log(string.format("   tech points %d->%d (stripCost %d - grant %d)", tp, newTp, stripCost, 6 * levelsLost))
+        end
+        for k = 1, levelsLost do log("   stat point: " .. removeOneStatPoint(ip)) end
+    end
+    pcall(function() sp.Exp = newExp end)
+    pcall(function() sp.Level = newLevel end)
+    pcall(function() local td2 = getTechData(); if isValid(td2) then td2:OnUpdateLocalPlayerLevel() end end)
+    local lost = oldExp - newExp
+    if lost > 0 then
+        announce(playerName() .. " died and lost " .. commas(lost) .. " EXP" ..
+            (levelsLost > 0 and (" and dropped to L" .. newLevel .. ".") or "."))
+    end
+    log("=== DE-LEVEL done ===")
+end
+
+-- Death handler: lose CONFIG.total_loss_fraction of total earned EXP.
+local function onDeath(reason)
+    if not loadCurve() then return end
+    local _, ip = getAll(); if not isValid(ip) then return end
+    local exp = num(ip:GetExp()) or 0
+    applyDeLevel(math.floor(exp * (1.0 - CONFIG.total_loss_fraction)), reason or "death")
 end
 
 -- Death detection: poll IsDead, apply once per death, re-arm when alive again.
@@ -90,22 +228,61 @@ LoopAsync(CONFIG.poll_ms, function()
             if wasDead then wasDead = false end
         elseif seenAlive and not wasDead then
             wasDead = true
-            ExecuteInGameThread(function() local ok,e=pcall(function() applyPenalty("death") end); if not ok then log("penalty err "..tostring(e)) end end)
+            ExecuteInGameThread(function() local ok, e = pcall(function() onDeath("death") end); if not ok then log("penalty err " .. tostring(e)) end end)
         end
     end)
     return false
 end)
 
 if CONFIG.enable_test_keys then
-    local snap
-    RegisterKeyBind(Key.F9, function() pcall(function() applyPenalty("manual test") end) end)
-    RegisterKeyBind(Key.F7, function() pcall(function()
-        local _, ip, sp = getAll(); if isValid(ip) and sp then if not snap then snap = num(sp.Exp) else sp.Exp = snap end end
+    pcall(function() math.randomseed(os.time()) end)
+
+    -- F9: run the real death penalty right now.
+    RegisterKeyBind(Key.F9, function() ExecuteInGameThread(function()
+        local ok, e = pcall(function() onDeath("F9 test") end); if not ok then log("F9 err " .. tostring(e)) end
     end) end)
-    RegisterKeyBind(Key.F10, function() pcall(function()
-        local _, ip = getAll(); if isValid(ip) then log("L="..tostring(ip:GetLevel()).." Exp="..tostring(ip:GetExp())) end
+
+    -- F1: force exactly one level down (tests the de-level path at any level).
+    RegisterKeyBind(Key.F1, function() ExecuteInGameThread(function() pcall(function()
+        if not loadCurve() then return end
+        local _, ip = getAll(); if not isValid(ip) then return end
+        local L = num(ip:GetLevel()) or 1
+        if L <= 1 then log("F1: already L1"); return end
+        applyDeLevel((THRESH[L] or 0) - 1, "F1 forced -1 level")
+    end) end) end)
+
+    -- F3: dry-run (read-only preview of what a death would strip).
+    RegisterKeyBind(Key.F3, function() pcall(function()
+        log("######## F3 DRY-RUN ########")
+        if not loadCurve() then log("no curve"); return end
+        local _, ip = getAll(); if not isValid(ip) then return end
+        local oldLevel = num(ip:GetLevel()) or 1
+        local oldExp   = num(ip:GetExp())   or 0
+        local newExp   = math.floor(oldExp * (1.0 - CONFIG.total_loss_fraction))
+        local newLevel = levelForExp(newExp)
+        local levelsLost = oldLevel - newLevel
+        log(string.format("death: L%d exp=%d -> exp=%d = L%d (levelsLost=%d)", oldLevel, oldExp, newExp, newLevel, levelsLost))
+        local td = getTechData()
+        if isValid(td) then
+            local arr = td.UnlockedTechnologyNameArray
+            local n = arr:GetArrayNum()
+            local strip, cost = 0, 0
+            for i = 1, n do
+                local nm = arr[i]:ToString()
+                local bd; pcall(function() bd = td:GetTechlonogyBaseData(FName(nm)) end)
+                local cap = bd and num(bd.LevelCap)
+                if cap and cap > newLevel then strip = strip + 1; cost = cost + (bd and num(bd.Cost) or 0) end
+            end
+            local tp = num(td.TechnologyPoint) or 0
+            log(string.format("   techs would strip: %d (cost %d); tech points %d -> %d", strip, cost, tp, math.max(0, tp + cost - 6 * math.max(levelsLost, 0))))
+        end
+        local un; pcall(function() un = ip:GetUnusedStatusPoint() end)
+        log(string.format("   stat points to remove: %d (unused=%s)", math.max(levelsLost, 0), tostring(un)))
+        log("######## DRY-RUN END ########")
     end) end)
+
+    log("TEST KEYS ON: F9 = death penalty now, F1 = force -1 level, F3 = dry-run")
 end
 
 loadCurve()
-log(string.format("Punishing Death v1.0.0 loaded -- lose %.0f%% of current-level progress on death.", CONFIG.progress_loss_fraction * 100))
+log(string.format("Punishing Death v2.0.0 loaded -- lose %.0f%% of total EXP on death (de-levels + strips rewards).", CONFIG.total_loss_fraction * 100))
