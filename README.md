@@ -1,13 +1,15 @@
 # Punishing Death (Palworld / UE4SS)
 
-Single-player mod: **when you die, you lose part of your progress toward the
-next level.** Your level number never drops — only the EXP inside your current
-level is drained (down to at most the start of that level).
+**When you die, you lose ~10% of your total EXP** — in the mid/late game that's
+about a level, so you **drop a level** and lose that level's rewards with it:
+its unlocked technologies re-lock, its technology points are removed, and a stat
+point is docked.
 
-This is deliberately exploit-proof: because your level never changes, dying can
-never trick the game into re-granting status/technology points. Making death a
-loss — never a gain — is the whole point. See `DESIGN_NOTES.md` for the
-approaches we tried and rejected (including full de-leveling and why it failed).
+It stays **exploit-proof**: re-earning the level re-grants exactly what was
+stripped (and you re-buy the techs with the refunded points), so a
+death→recover cycle nets to zero — you can never farm points by dying. See
+`DESIGN_NOTES.md` for how the de-leveling was made safe, and `CHANGELOG.md` for
+what changed from 1.x.
 
 ## Install
 Copy the `PunishingDeath` folder into your UE4SS Mods folder:
@@ -22,12 +24,14 @@ PunishingDeath : 1
 ```
 
 ## Configure (top of Scripts/main.lua)
-- `progress_loss_fraction` — severity per death:
-  - `0.25` = lose a quarter of your progress toward the next level
-  - `0.50` = lose half (default)
-  - `1.00` = every death throws you back to the START of your current level
-- `poll_ms` — how often the death check runs (default 1000 ms).
-- `enable_test_keys` — set `false` for a clean release (removes F9/F7/F10).
+- `total_loss_fraction` — fraction of TOTAL EXP lost per death:
+  - `0.05` = 5% (gentler)
+  - `0.10` = 10% (default; ≈ one level mid/late game)
+  - `0.20` = 20% (can drop more than one level)
+- `show_message` — `true` broadcasts "\<name\> died and lost N EXP" (a system
+  announce; on a dedicated server all players see it). `false` silences it.
+- `poll_ms` — how often the death check runs (default 2000 ms).
+- `enable_test_keys` — set `false` for a clean release (default false).
 
 Edits hot-reload live if UE4SS auto-reload is on.
 
@@ -36,18 +40,19 @@ Edits hot-reload live if UE4SS auto-reload is on.
 - DOES NOT trigger: fast travel, opening menus/map, low HP without dying, or
   the brief load state at login.
 
-## Test keys (on foot; only if `enable_test_keys = true`)
-- `F9` — apply the penalty now (no dying needed).
-- `F7` — restore your EXP to the snapshot taken before the first penalty.
-- `F10` — print level/EXP to the UE4SS log.
+## Test keys (only if `enable_test_keys = true`)
+- `F9` — apply the death penalty now (no dying needed).
+- `F1` — force exactly one level down (to test the de-level at any level).
+- `F3` — dry-run: print what a death would strip, without changing anything.
 
 ## Compatibility
 - Works on the PC (Steam) build with UE4SS. Does NOT work on the Xbox / Microsoft
   Store (Game Pass) version or on consoles.
-- Reads the level curve live from `DT_PalExpTable`, so extended-level-cap mods
+- Community-tested on dedicated servers.
+- Reads the level curve and tech costs live, so extended-level-cap and tech mods
   are handled automatically.
 
 ## Known minor issue
-The on-screen EXP bar may not repaint until you re-open the character sheet;
-the underlying value updates and saves immediately. (Your level number is always
-correct — that was a de-leveling problem, which this design avoids.)
+After a de-level the top-left HUD level number may not repaint until you level up
+again or open a menu. The level, EXP, techs, and points are all correct and saved
+immediately — only the HUD widget lags.

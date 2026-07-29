@@ -24,7 +24,7 @@ local CONFIG = {
     show_message = true,
 
     poll_ms = 2000,           -- death-check interval
-    enable_test_keys = true,  -- F9 = run penalty now, F1 = force -1 level, F3 = dry-run. OFF for release.
+    enable_test_keys = false, -- F9 = run penalty now, F1 = force -1 level, F3 = dry-run. OFF for release.
     verbose = false,
 }
 
@@ -150,6 +150,7 @@ end
 -- Remove one unit of status-point capacity: unused first, else dock a random
 -- allocated stat. Status points are keyed by (Japanese) FName StatusName, read
 -- dynamically from GetStatusPointList so we never hardcode the names.
+local statDockCounter = 0   -- advances every dock so the pick varies within a multi-level drop
 local function removeOneStatPoint(ip)
     local unused = num(ip:GetUnusedStatusPoint()) or 0
     if unused > 0 then
@@ -168,8 +169,13 @@ local function removeOneStatPoint(ip)
         end
     end
     if #spent == 0 then return "none-to-dock" end
-    local pick = spent[math.random(#spent)]
-    return pcall(function() ip:SetStatusPoint(pick.sn, pick.pt - 1) end) and "spent-dock" or "spent-FAIL"
+    -- vary the pick from live state (EXP differs every death) + a per-call counter,
+    -- so it's not always the first stat and doesn't depend on math.random being seeded.
+    statDockCounter = statDockCounter + 1
+    local seed = (num(ip:GetExp()) or 0) + statDockCounter * 7919
+    local pick = spent[(seed % #spent) + 1]
+    local nm = "?"; pcall(function() nm = pick.sn:ToString() end)
+    return pcall(function() ip:SetStatusPoint(pick.sn, pick.pt - 1) end) and ("spent-dock:" .. nm) or "spent-FAIL"
 end
 
 -- The de-level penalty. newExp = target TOTAL exp after the loss.

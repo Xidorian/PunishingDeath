@@ -1,7 +1,8 @@
 # Punishing Death — mod-page copy
 
-Paste/adapt this when you create the Nexus Mods or CurseForge page. Sections are
-labeled; most upload forms have separate fields for Summary, Description, etc.
+Paste/adapt this when you update the Nexus Mods, CurseForge, or Steam Workshop
+page. Sections are labeled; most upload forms have separate fields for Summary,
+Description, etc.
 
 ---
 
@@ -9,45 +10,55 @@ labeled; most upload forms have separate fields for Summary, Description, etc.
 Punishing Death
 
 ## Version
-1.0.0
+2.0.0
 
 ## Short summary (one line)
-Die and you lose progress toward your next level — a fair, exploit-proof death penalty.
+Die and you lose ~10% of your total EXP — enough to drop a level and strip that level's tech and stat points. Exploit-proof.
 
 ## Description
 
 **Death should cost something.** In vanilla Palworld, dying is barely an
-inconvenience. Punishing Death adds a real setback: when you die, you lose part
-of your EXP progress **toward your next level**.
+inconvenience. Punishing Death makes it hurt: when you die, you lose a flat
+share of your **total earned EXP** (10% by default).
 
-Crucially, your **level number never drops**. Only the EXP *inside* your current
-level is drained — down to, at most, the start of that level.
+In the early game that's just a dent in your progress. But in the mid-to-late
+game, 10% of your total is roughly a level's worth — so **you drop a level** —
+and when you do, that level's rewards come with it:
 
-### Why no de-leveling?
-Because it would be exploitable. If a mod lowered your level, Palworld re-grants
-status and technology points when you level back up — meaning you could *gain*
-points by dying on purpose. That's the opposite of a punishment. By keeping your
-level fixed and only draining in-level progress, this mod is **impossible to
-farm**: death is always a loss, never a gain. (A full breakdown of the tested
-approaches is in DESIGN_NOTES.md, included in the download.)
+- **Technologies** unlocked at the level you lost are **re-locked** (they vanish
+  from your tech tree and build menu until you earn the level back).
+- The **technology points** that level granted are removed.
+- One **stat point** per level lost is removed — an unspent point if you have
+  one, otherwise a point is docked from a stat you've already allocated.
+
+### Isn't de-leveling exploitable?
+It would be — if you got to keep the rewards. Palworld re-grants tech and stat
+points when you level up, so a mod that *only* lowered your level would let you
+farm points by dying. Punishing Death closes that hole by **stripping exactly
+what the level gave you**: when you re-earn the level, the game re-grants the
+points and you re-buy the techs, netting to **zero**. Death is always a loss,
+never a gain. (Full breakdown in DESIGN_NOTES.md, included in the download.)
 
 ### Features
-- Lose a configurable share of your current-level progress on every death.
-- Level number, unlocked technologies, and allocated stats are never touched.
-- Reads the level curve live from the game, so extended-level-cap mods work
-  automatically.
+- Lose a configurable share of your **total** EXP on every death (default 10%).
+- Natural de-leveling with full, exploit-proof reward stripping (techs + tech
+  points + stat points).
+- On-screen notice: *"\<name\> died and lost N EXP."*
+- Reads the level curve and tech costs live from the game, so extended-level-cap
+  and tech mods work automatically.
 - Lightweight: a single low-frequency death check, no per-frame work.
 
 ### Configuration
 Open `Scripts/main.lua` and edit the top:
-- `progress_loss_fraction`
-  - `0.25` — lose a quarter of your progress toward the next level
-  - `0.50` — lose half (default)
-  - `1.00` — every death sends you back to the START of your current level
+- `total_loss_fraction`
+  - `0.05` — lose 5% of total EXP per death (gentler)
+  - `0.10` — lose 10% (default; ≈ one level in mid/late game)
+  - `0.20` — lose 20% (brutal; can drop more than one level)
+- `show_message` — `true` to broadcast the death notice, `false` to silence it.
 
 ## Requirements
 - **UE4SS** (RE-UE4SS) installed for Palworld.
-- Single-player / client (host-and-play). Not tested on dedicated servers.
+- Works in single-player and has been run on dedicated servers by players.
 
 ## Installation
 1. Install UE4SS for Palworld if you haven't.
@@ -59,14 +70,26 @@ Open `Scripts/main.lua` and edit the top:
    `PunishingDeath : 1`
 4. Launch the game.
 
+### Updating from 1.x
+Just replace the old `PunishingDeath` folder with this one. **Note the mechanic
+changed:** 1.x drained in-level progress and never de-leveled; 2.0 loses total
+EXP and de-levels with reward stripping. If you preferred the old behavior, keep
+using 1.x.
+
 ## Compatibility
 - PC (Steam) build with UE4SS. **Does not work** on the Xbox / Microsoft Store
   (Game Pass) version or on consoles.
-- Play-nice with other UE4SS Lua mods.
+- Plays nice with other UE4SS Lua mods.
+
+## Multiplayer note
+On a dedicated server the death notice is a system announce, so **all players
+see it** ("PlayerX died and lost N EXP"). Set `show_message = false` if you'd
+rather keep deaths private.
 
 ## Known minor issue
-The on-screen EXP bar may not repaint until you re-open the character menu; the
-value updates and saves immediately.
+After a de-level, the level number on the HUD may not repaint until you level up
+again or re-open a menu — the actual level, EXP, techs, and points all update and
+save immediately.
 
 ## Credits
 Created by <your name/handle>.

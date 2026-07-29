@@ -1,67 +1,58 @@
 # Punishing Death — Design Notes & Attempt Log
 
-Goal: make death **cost** something, to make the game harder. Anything that
-lets a player come out *ahead* by dying is a failure of the design.
+Goal: make death **cost** something, to make the game harder. Anything that lets
+a player come out *ahead* by dying is a failure of the design.
 
-## Final design (shipped): no-de-level "progress loss"
-On death, drain part of the player's EXP progress **within the current level**,
-down to at most the start of that level. **The level number never changes.**
+## Final design (shipped, 2.0): de-level + reward stripping
+On death, lose a flat fraction of **total earned EXP** (`total_loss_fraction`,
+default 0.10). The level is recomputed from the new EXP against the live curve,
+so in the mid/late game you **drop a level**. When you lose a level, that level's
+rewards are stripped so the drop can't be farmed:
 
-- `progress_loss_fraction` controls severity (0.50 = lose half your progress
-  toward the next level; 1.00 = back to the start of the current level).
-- Exploit-free by construction: no level change → the game never re-grants
-  status/technology points → nothing to farm.
-- No HUD desync: the level number is never wrong, so the top-left HUD and the
-  character sheet always agree.
+- **Technologies** with a `LevelCap` above the new level are re-locked.
+- **Technology points**: `newUnused = max(0, unused + stripCost − 6 × levelsLost)`
+  — remove the level's grant (6/level) but refund the stripped techs' point cost.
+- **Stat points**: one per level lost — an unspent point if available, else a
+  point is docked from a randomly chosen allocated stat.
 
-Implementation touches only `SaveParameter.Exp` (via the individual character
-parameter). Level curve is read live from `DT_PalExpTable.TotalEXP`.
+**Exploit-safety.** Re-earning the level re-grants exactly what was stripped, and
+you re-buy the techs with the refunded points, so a death→recover cycle nets to
+**zero**. The refund term is what makes it exact: strip more than 6 points of
+techs and the surplus is returned; strip less and only the difference is removed.
 
-## What we tried first: de-leveling (abandoned)
-Original idea: lose a % of TOTAL exp and recompute the level downward for a
-"hardcore" feel. It worked mechanically but opened a serious exploit and a
-display bug, both rooted in the same cause.
+This is the "hardcore" approach the 1.x notes below judged impossible. It became
+possible once three engine levers were found (see next section).
 
-### Root cause
-We change the level by writing `SaveParameter.Level` directly. That bypasses
-the game's internal level-change event, so systems that react to level changes
-never run.
+## How the 1.x blockers were solved
+1.x abandoned de-leveling for two reasons — a point-farm exploit and a HUD
+desync — both rooted in writing `SaveParameter.Level` directly (which bypasses
+the level-change event). 2.0 keeps the direct write but neutralizes the fallout:
 
-### Consequence 1 — point-farm exploit (the dealbreaker)
-Leveling up grants status points and technology points. De-leveling by direct
-write does NOT remove them. Measured on a real 44→45 re-level:
-`TechPt 14→17, BossTechPt 24→25, UnusedStatusPoint 0→1`. So a player could die,
-re-level, and pocket free points every cycle — most dangerous at max level,
-where points are otherwise capped. This is the exact opposite of a punishing
-mod, so de-leveling had to go.
+- **Point-farm exploit → fixed by stripping.** Leveling re-grants points; 1.x
+  never removed them, so dying was a net gain. 2.0 removes exactly the level's
+  grant on the way down (with the tech-cost refund above), so the re-grant on the
+  way up is a wash, not a profit.
+- **"No clean re-lock API" (1.x attempt #4, judged unsafe) → solved.** Rebuild
+  `PalTechnologyData.UnlockedTechnologyNameArray` (read the names, `:Empty()`,
+  re-add the keepers by indexed assignment) then call
+  `OnRep_UnlockedTechnologyNameArray()` — this re-locks the tech in the tree AND
+  removes its recipe from the build menu. Each tech's level and point cost come
+  from `GetTechlonogyBaseData(FName(name))` (`.LevelCap`, `.Cost`).
+- **"Can't undo a stat" → solved.** Status points are keyed by (Japanese) FName;
+  read the live list via `GetStatusPointList`, then `SetStatusPoint(name, val−1)`
+  reduces an allocated stat without refunding it. Unspent points use
+  `DecrementUnusedStatusPoint`.
 
-### Attempts to fix the exploit (all failed)
-1. **Single-shot clawback** — after a re-level into already-earned territory,
-   write the point counters back down. Failed: the engine re-grants the points
-   a frame *after* our write (timing race). Result stayed inflated (14→17).
-2. **Enforcement window** — keep re-writing the counters down for ~4s to outlast
-   the grant. Failed for a different reason: the `TechnologyData` object
-   (reached via PlayerState) did not reliably resolve at the moment of the
-   level-up, so the clawback silently no-op'd. Result leaked worse (17→24).
-3. **Trigger the game's own reconcile** — call
-   `PalTechnologyData:OnUpdateLocalPlayerLevel()` to make the game recompute
-   points for the new level. Failed: no effect on the point totals, and did not
-   refresh the HUD either.
-4. **Full rollback** (remove allocated stats, re-lock purchased techs) — not
-   attempted; judged unsafe. There is no clean "re-lock technology" API,
-   techs have prerequisite chains, and the game itself keeps unlocks after a
-   de-level (confirmed: a de-leveled character could still build L45 tech). The
-   game doesn't track stat-allocation order either, so "undo the last stat" has
-   nothing to key on.
+## Known minor issue (accepted)
+After a de-level the top-left HUD level number may not repaint until you level up
+again or open a menu. The stored level, EXP, techs, and points are all correct
+and saved immediately; only the HUD widget lags. `OnUpdateLocalPlayerLevel()`
+does not refresh it, and chasing a clean HUD refresh wasn't worth blocking the
+release. If you know the widget-refresh call, PRs/notes welcome.
 
-### Consequence 2 — HUD level desync
-After a direct de-level the top-left HUD kept showing the old level (with a
-mis-scaled XP bar) while the character sheet showed the new one. Same root
-cause; the reconcile call above did not fix it.
-
-## Verdict
-De-leveling cannot be made both correct and robust from Lua without fighting the
-engine on every level-up. The no-de-level design removes the level change
-entirely, which removes the exploit, the clawback complexity, and the HUD bug
-in one move — and still punishes death by erasing progress. Aligns with the
-goal; ships.
+## History: 1.x "no-de-level progress loss"
+1.0 shipped the safe-but-milder design: drain EXP **within** the current level
+only, never changing the level number. That sidestepped the exploit and HUD bug
+entirely by never de-leveling. It's still a valid, gentler penalty — if you
+prefer it, keep using 1.x. 2.0 supersedes it with the true de-level mechanic now
+that the blockers are solved.
