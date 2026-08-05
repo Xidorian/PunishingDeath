@@ -1,5 +1,21 @@
 # Changelog — Punishing Death
 
+## [Unreleased]
+
+**Fixed**
+- **Revives no longer trigger the penalty.** The penalty now fires on the
+  player's **respawn**, not on the death instant. A Herbil second-life (and any
+  in-place revive, incl. multiplayer ally-revive) takes a separate engine path,
+  so a revived player keeps all their EXP — previously they were docked for a
+  death they never actually completed.
+
+**Changed**
+- **Trigger reworked from death-detection to respawn.** Replaced the `IsDead`
+  poll (`LoopAsync`) with a hook on `PalPlayerCharacter:CallRespawnDelegate`,
+  which fires only on a real death→respawn — not on revive, fast travel, statue
+  warp, or load-in. Deterministic (event-driven, no 2s poll race) and lower
+  overhead. Penalty math is unchanged; it now applies to the full pre-death EXP.
+
 ## 2.0.0
 A full rework of the penalty. 1.x drained your in-level EXP and never touched
 your level; 2.0 makes death cost a level's worth of progress — and strips that

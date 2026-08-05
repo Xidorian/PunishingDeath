@@ -1,7 +1,12 @@
 -- ============================================================================
---  Punishing Death  v2.0.0  --  Palworld UE4SS Lua mod  (single-player / client)
+--  Punishing Death  v2.1.0  --  Palworld UE4SS Lua mod  (single-player / client)
 --
---  On death you lose a flat fraction of your TOTAL earned EXP (default 10%).
+--  Fires on RESPAWN (not the death instant): a real death->respawn broadcasts
+--  PalPlayerCharacter:CallRespawnDelegate, while a Herbil-style second-life / MP ally-revive
+--  takes the SEPARATE CallReviveDelegate path -- so a revived player is exempt, and load-in /
+--  fast travel / statue warp (which fire neither) never penalize. See the trigger below.
+--
+--  On respawn you lose a flat fraction of your TOTAL earned EXP (default 10%).
 --  In mid/late game that is roughly one level, so you naturally DE-LEVEL -- and
 --  when you do, that level's rewards are stripped too:
 --    * techs whose LevelCap is now above your level are re-locked
@@ -23,7 +28,6 @@ local CONFIG = {
     --   NOTE: on a dedicated server this system-announce is visible to ALL players.
     show_message = true,
 
-    poll_ms = 2000,           -- death-check interval
     enable_test_keys = false, -- F9 = run penalty now, F1 = force -1 level, F3 = dry-run. OFF for release.
     verbose = false,
 }
@@ -222,23 +226,28 @@ local function onDeath(reason)
     applyDeLevel(math.floor(exp * (1.0 - CONFIG.total_loss_fraction)), reason or "death")
 end
 
--- Death detection: poll IsDead, apply once per death, re-arm when alive again.
-local wasDead, seenAlive = false, false
-LoopAsync(CONFIG.poll_ms, function()
-    pcall(function()
-        local _, _, _, comp = getAll()
-        if not isValid(comp) then return end
-        local dead = false; pcall(function() dead = comp:IsDead() end)
-        if not dead then
-            seenAlive = true
-            if wasDead then wasDead = false end
-        elseif seenAlive and not wasDead then
-            wasDead = true
-            ExecuteInGameThread(function() local ok, e = pcall(function() onDeath("death") end); if not ok then log("penalty err " .. tostring(e)) end end)
-        end
+-- Penalty trigger: fire on the player's RESPAWN, not on the death instant.
+-- Probe-confirmed: a real death->respawn broadcasts PalPlayerCharacter:CallRespawnDelegate,
+-- while a Herbil-style second-life (and MP ally-revive) takes the SEPARATE CallReviveDelegate
+-- path, and load-in / fast travel / statue warp fire neither. So hooking respawn penalizes
+-- ONLY real deaths and structurally ignores revives -- we never have to detect Herbil at all.
+-- Because we no longer drain EXP at the death instant, a revived player keeps everything.
+-- (Debounce: one respawn may broadcast the delegate more than once -- apply at most once per window.)
+local lastPenalty = -1e9
+local RESPAWN_DEBOUNCE_S = 3
+local function onRespawn()
+    local t; pcall(function() t = os.clock() end); t = t or 0
+    if (t - lastPenalty) < RESPAWN_DEBOUNCE_S then return end
+    lastPenalty = t
+    ExecuteInGameThread(function()
+        local ok, e = pcall(function() onDeath("respawn") end)
+        if not ok then log("penalty err " .. tostring(e)) end
     end)
-    return false
+end
+local hookOk = pcall(function()
+    RegisterHook("/Script/Pal.PalPlayerCharacter:CallRespawnDelegate", function() onRespawn() end)
 end)
+log("respawn-penalty hook: " .. (hookOk and "registered (CallRespawnDelegate)" or "FAILED to register"))
 
 if CONFIG.enable_test_keys then
     pcall(function() math.randomseed(os.time()) end)
@@ -291,4 +300,4 @@ if CONFIG.enable_test_keys then
 end
 
 loadCurve()
-log(string.format("Punishing Death v2.0.0 loaded -- lose %.0f%% of total EXP on death (de-levels + strips rewards).", CONFIG.total_loss_fraction * 100))
+log(string.format("Punishing Death v2.1.0 loaded -- lose %.0f%% of total EXP on respawn (de-levels + strips rewards; revives exempt).", CONFIG.total_loss_fraction * 100))
