@@ -1,13 +1,13 @@
 # Punishing Death (Palworld / UE4SS)
 
-**When you die, you lose ~10% of your total EXP** — in the mid/late game that's
+**When you die, you lose ~10% of your total EXP**, in the mid/late game that's
 about a level, so you **drop a level** and lose that level's rewards with it:
 its unlocked technologies re-lock, its technology points are removed, and a stat
 point is docked.
 
 It stays **exploit-proof**: re-earning the level re-grants exactly what was
 stripped (and you re-buy the techs with the refunded points), so a
-death→recover cycle nets to zero — you can never farm points by dying. See
+death→recover cycle nets to zero, you can never farm points by dying. See
 `DESIGN_NOTES.md` for how the de-leveling was made safe, and `CHANGELOG.md` for
 what changed from 1.x.
 
@@ -24,26 +24,30 @@ PunishingDeath : 1
 ```
 
 ## Configure (top of Scripts/main.lua)
-- `total_loss_fraction` — fraction of TOTAL EXP lost per death:
+- `total_loss_fraction`, fraction of TOTAL EXP lost per death:
   - `0.05` = 5% (gentler)
   - `0.10` = 10% (default; ≈ one level mid/late game)
   - `0.20` = 20% (can drop more than one level)
-- `show_message` — `true` broadcasts "\<name\> died and lost N EXP" (a system
+- `show_message`, `true` broadcasts "\<name\> died and lost N EXP" (a system
   announce; on a dedicated server all players see it). `false` silences it.
-- `poll_ms` — how often the death check runs (default 2000 ms).
-- `enable_test_keys` — set `false` for a clean release (default false).
+- `enable_test_keys`, set `false` for a clean release (default false).
 
 Edits hot-reload live if UE4SS auto-reload is on.
 
 ## What triggers it / what doesn't
-- TRIGGERS: any real death (fall, damage, lava, drowning, etc.).
-- DOES NOT trigger: fast travel, opening menus/map, low HP without dying, or
-  the brief load state at login.
+The penalty fires when you **respawn** after a real death, not the moment you
+die, so anything that saves you from actually respawning costs you nothing.
+- TRIGGERS: any real death you respawn from (fall, damage, lava, drowning, etc.),
+  including the emergency respawn.
+- DOES NOT trigger: being **revived** instead of respawning, a Herbil-style
+  second-life passive, a downed teammate getting picked up in multiplayer, fast
+  travel, statue warp, opening menus/map, low HP without dying, or the brief load
+  state at login.
 
 ## Test keys (only if `enable_test_keys = true`)
-- `F9` — apply the death penalty now (no dying needed).
-- `F1` — force exactly one level down (to test the de-level at any level).
-- `F3` — dry-run: print what a death would strip, without changing anything.
+- `F9`, apply the death penalty now (no dying needed).
+- `F1`, force exactly one level down (to test the de-level at any level).
+- `F3`, dry-run: print what a death would strip, without changing anything.
 
 ## Compatibility
 - Works on the PC (Steam) build with UE4SS. Does NOT work on the Xbox / Microsoft
@@ -55,4 +59,4 @@ Edits hot-reload live if UE4SS auto-reload is on.
 ## Known minor issue
 After a de-level the top-left HUD level number may not repaint until you level up
 again or open a menu. The level, EXP, techs, and points are all correct and saved
-immediately — only the HUD widget lags.
+immediately, only the HUD widget lags.

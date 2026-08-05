@@ -23,6 +23,26 @@ techs and the surplus is returned; strip less and only the difference is removed
 This is the "hardcore" approach the 1.x notes below judged impossible. It became
 possible once three engine levers were found (see next section).
 
+## 2.1: trigger on respawn, not on death (revives no longer penalized)
+2.0 detected death by polling `comp:IsDead()` and applied the penalty the moment
+you died. That mis-handled being **revived**: a Herbil second-life (and any
+in-place revive, incl. a multiplayer ally-revive) still tripped the poll, so you
+were docked for a death you never actually completed — and whether it fired at
+all was a coin-flip against the 2 s poll interval.
+
+Fix: penalize on **respawn**, not death. A UFunction probe showed the game itself
+separates the two paths on `PalPlayerCharacter` — a real death→respawn broadcasts
+`CallRespawnDelegate`, while a revive takes the **separate** `CallReviveDelegate`.
+So the trigger is now a hook on `CallRespawnDelegate`; the `IsDead` poll is gone.
+Revives are exempt **structurally** — they never touch the respawn path — with no
+need to detect Herbil at all, and load-in / fast travel / statue warp (which fire
+neither delegate) never penalize. Because EXP is no longer drained at the death
+instant, a revived player keeps everything; a real respawn loses the same 10% as
+before, off the full pre-death total. Ruled out along the way: `ClientRestart`
+(fires on load-in and in unrelated bursts, misses real deaths) and pawn
+destroy+recreate (inconsistent between respawns). Confirmed in-game: 4 respawns
+penalized, 2 revives skipped, including a mount death.
+
 ## How the 1.x blockers were solved
 1.x abandoned de-leveling for two reasons — a point-farm exploit and a HUD
 desync — both rooted in writing `SaveParameter.Level` directly (which bypasses

@@ -10,7 +10,7 @@ Description, etc.
 Punishing Death
 
 ## Version
-2.0.0
+2.1.0
 
 ## Short summary (one line)
 Die and you lose ~10% of your total EXP — enough to drop a level and strip that level's tech and stat points. Exploit-proof.
@@ -46,7 +46,10 @@ never a gain. (Full breakdown in DESIGN_NOTES.md, included in the download.)
 - On-screen notice: *"\<name\> died and lost N EXP."*
 - Reads the level curve and tech costs live from the game, so extended-level-cap
   and tech mods work automatically.
-- Lightweight: a single low-frequency death check, no per-frame work.
+- **Fires on respawn, so being revived is free.** A second-life passive (e.g.
+  Herbil), a downed teammate getting picked up in multiplayer, or any in-place
+  revive doesn't count as a death — you only pay when you actually respawn.
+- Lightweight: an event-driven respawn hook, no polling and no per-frame work.
 
 ### Configuration
 Open `Scripts/main.lua` and edit the top:
@@ -84,7 +87,8 @@ using 1.x.
 ## Multiplayer note
 On a dedicated server the death notice is a system announce, so **all players
 see it** ("PlayerX died and lost N EXP"). Set `show_message = false` if you'd
-rather keep deaths private.
+rather keep deaths private. Reviving a downed teammate (rather than letting them
+respawn) spares them the penalty — it only lands on an actual respawn.
 
 ## Known minor issue
 After a de-level, the level number on the HUD may not repaint until you level up

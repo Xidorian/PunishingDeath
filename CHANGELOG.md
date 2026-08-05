@@ -1,6 +1,8 @@
 # Changelog — Punishing Death
 
-## [Unreleased]
+## 2.1.0
+The penalty now fires on **respawn** instead of the death instant, so being
+revived no longer costs you.
 
 **Fixed**
 - **Revives no longer trigger the penalty.** The penalty now fires on the
